@@ -39,10 +39,10 @@ void loop() {
     // Ignora códigos de repetição (segurar botão) para não corromper a memória
     if (results.value != 0xFFFFFFFFFFFFFFFF && results.value != 0) {
       
-      codigoSalvo = results.value;
+    codigoSalvo = results.value;
       protocoloSalvo = results.decode_type;
       tamanhoBitsSalvo = results.bits;
-
+      
       Serial.println("\n[SINAL CLONADO COM SUCESSO!]");
       Serial.print("-> Protocolo: "); Serial.println(typeToString(protocoloSalvo));
       Serial.print("-> Codigo (HEX): 0x"); Serial.println(resultToHexidecimal(&results));
@@ -57,24 +57,40 @@ void loop() {
     char comando = Serial.read();
     
     // Se o usuário digitou 'G' ou 'g' no terminal
-    if (comando == 'G' || comando == 'g') {
       if (codigoSalvo != 0) {
         Serial.println("\n[TX] DISPARANDO SINAL INFRAVERMELHO...");
+
+        delay(50);
         
         // A biblioteca precisa que pare o receptor antes de transmitir para não dar eco
-        irrecv.disableIRIn(); 
+        //irrecv.disableIRIn(); 
         
+        delay(50);
         // Envia o sinal armazenado baseando-se no protocolo correto clonado
         irsend.send(protocoloSalvo, codigoSalvo, tamanhoBitsSalvo);
+        //irsend.sendNEC(codigoSalvo, 32);
+        
+        delay(50);
         
         Serial.println("[TX] Sinal transmitido! Reativando modo escuta...");
         
         // Reativa o receptor
-        irrecv.enableIRIn(); 
+        //irrecv.enableIRIn(); 
       } else {
         Serial.println("\n[AVISO] Nenhum sinal foi clonado ainda! Aperte um botao no controle primeiro.");
       }
-    }
   }
   delay(50);
 }
+
+/*
+void loop() {
+  // Teste forçado: Envia um sinal padrão NEC (tipo o da sua TV) a cada 2 segundos
+  Serial.println("[TX TESTE] Disparando código padrão NEC...");
+  
+  // Envia o protocolo NEC, código 0xFF6897 (um dos que você capturou), 32 bits
+  irsend.send(NEC, 0xFF6897, 32); 
+  
+  delay(2000);
+}
+*/
