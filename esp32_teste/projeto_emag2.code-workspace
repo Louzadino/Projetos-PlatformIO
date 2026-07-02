@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../../../projeto_emag2"
+		},
+		{
+			"name": "esp32_teste",
+			"path": "."
+		}
+	],
+	"settings": {}
+}
