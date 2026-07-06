@@ -55,8 +55,8 @@ void setup() {
     ELECHOUSE_cc1101.setMHZ(433.92);   
     ELECHOUSE_cc1101.SetRx();          
     
-    // Ativa a escuta inteligente (ignora ruído, usa interrupção de hardware)
-    mySwitch.enableReceive(PINO_RF_GDO0); 
+    // CORREÇÃO: Usa mapeamento oficial de interrupção do ESP32
+    mySwitch.enableReceive(digitalPinToInterrupt(PINO_RF_GDO0)); 
     
     Serial.println("✅ SINAL VERDE (Filtro Anti-Ruido Ativado)");
   } else {
@@ -77,6 +77,7 @@ void setup() {
   Serial.println("-> Aperte o controle da TV ou o botao da Campainha");
   Serial.println("-> Digite 'T' para disparar INFRAVERMELHO (TV/Ar)");
   Serial.println("-> Digite 'R' para disparar RADIOFREQUENCIA (Portoes)");
+  Serial.println("-> Digite 'M' para abrir o MONITOR DE SINAL (Teste RF)");
   Serial.println("==================================================");
 }
 
@@ -195,5 +196,23 @@ void loop() {
     else if (comando == 'R' || comando == 'r') {
       transmitirRF();
     } 
+    // --- NOVO COMANDO: MONITOR DE SINAL BRUTO (RSSI) ---
+    else if (comando == 'M' || comando == 'm') {
+      Serial.println("\n--- 📡 MEDIDOR DE ENERGIA RF (ATIVO POR 5 SEGUNDOS) ---");
+      Serial.println("Aperte o botao da campainha e segure perto da antena AGORA!");
+      
+      unsigned long inicio = millis();
+      // Fica lendo a potência do sinal no ar por 5 segundos
+      while (millis() - inicio < 5000) {
+        int forcaSinal = ELECHOUSE_cc1101.getRssi();
+        
+        Serial.print("Potencia da Onda (RSSI): ");
+        Serial.print(forcaSinal);
+        Serial.println(" dBm");
+        
+        delay(250); // Leitura a cada 1/4 de segundo
+      }
+      Serial.println("--- FIM DO TESTE DE HARDWARE ---");
+    }
   }
 }
