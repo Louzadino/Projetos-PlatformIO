@@ -5,6 +5,26 @@
 #include <IRrecv.h>
 #include <IRsend.h>
 #include <IRutils.h>
+#include <WiFi.h>
+#include <WebServer.h>
+
+void clonarSinal();
+void transmitirIR();
+void transmitirRF();
+
+// ==================================================
+// --- DEFINIÇÕES: WI-FI E SERVIDOR WEB
+// ==================================================
+const char* ssid = "FlipperZero_AP";  // NOME DA REDE QUE A ESP VAI CRIAR
+const char* password = "12345678";    // SENHA DA REDE (mínimo 8 caracteres)
+
+WebServer server(80);
+
+void enviarCORS() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+}
 
 // ==================================================
 // --- DEFINIÇÕES: INFRAVERMELHO
@@ -40,15 +60,141 @@ void setup() {
   delay(1000);
 
   Serial.println("\n==================================================");
-  Serial.println("  FLIPPER DIY: SISTEMA DE CLONAGEM (IR & RF RAW)  ");
-  Serial.println("==================================================");
+  Serial.println("FLIPPER DIY: SISTEMA DE CLONAGEM (IR & RF RAW)");
+  Serial.println("==================================================\n");
+
+  // 0. INICIALIZAÇÃO DO WI-FI (MODO AP)
+  Serial.print("[WI-FI] Criando rede (AP): ");
+  Serial.println(ssid);
+  WiFi.softAP(ssid, password);
+  
+  Serial.println("\n✅ SINAL VERDE (Rede Wi-Fi Criada!)");
+  Serial.print("🌐 CONECTE-SE AO WI-FI E ACESSE O IP: ");
+  Serial.println(WiFi.softAPIP());
+
+  // Configuração das rotas do Servidor Web
+  server.on("/status", HTTP_OPTIONS, []() {
+    enviarCORS();
+    server.send(204);
+  });
+  
+  server.on("/status", HTTP_GET, []() {
+    enviarCORS();
+    Serial.println("\n[HTTP] Novo dispositivo conectado a interface web!");
+    server.send(200, "application/json", "{\"status\":\"ok\", \"message\":\"ESP32 Conectada!\"}");
+  });
+
+  server.on("/sniff", HTTP_OPTIONS, []() {
+    enviarCORS();
+    server.send(204);
+  });
+
+  server.on("/sniff", HTTP_GET, []() {
+    enviarCORS();
+    
+    // Zera os estados anteriores
+    temSinalRFClonado = false;
+    temSinalIRClonado = false;
+    irrecv.resume(); 
+    
+    // Tenta capturar algum sinal (IR ou RF)
+    clonarSinal();
+    
+    String json = "{";
+
+    if (temSinalRFClonado) {
+      json += "\"status\":\"success\",";
+      json += "\"type\":\"RF 433MHz\",";
+      json += "\"hex\":\"SINAL RAW NA MEMORIA\",";
+      json += "\"bits\":" + String(tamanhoSinalRFClonado);
+    } 
+    else if (temSinalIRClonado) {
+      json += "\"status\":\"success\",";
+      json += "\"type\":\"" + typeToString(protocoloSalvoIR) + "\",";
+      json += "\"proto_id\":" + String(protocoloSalvoIR) + ",";
+      json += "\"hex\":\"" + resultToHexidecimal(&resultadosIR) + "\",";
+      json += "\"bits\":" + String(tamanhoBitsSalvoIR);
+    } 
+    else {
+      json += "\"status\":\"timeout\",";
+      json += "\"message\":\"Nenhum sinal detectado\"";
+    }
+
+    json += "}";
+    server.send(200, "application/json", json);
+  });
+
+  server.on("/transmit", HTTP_OPTIONS, []() {
+    enviarCORS();
+    server.send(204);
+  });
+
+  server.on("/transmit", HTTP_POST, []() {
+    enviarCORS();
+
+    if (!server.hasArg("plain")) {
+      server.send(400, "application/json", "{\"status\":\"error\"}");
+      return;
+    }
+    
+    String body = server.arg("plain");
+    Serial.println("\n💻 [HTTP] Pedido de Disparo (TX): " + body);
+    
+    if (body.indexOf("\"method\":\"rf\"") != -1) {
+      if (temSinalRFClonado) {
+        transmitirRF();
+        server.send(200, "application/json", "{\"status\":\"ok\"}");
+      } 
+      else {
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"RF na memoria foi perdido. Capture novamente.\"}");
+      }
+    } 
+    else if (body.indexOf("\"method\":\"ir\"") != -1) {
+      int hexIndex = body.indexOf("\"hex\":\"");
+      int bitsIndex = body.indexOf("\"bits\":");
+      int protoIdIndex = body.indexOf("\"proto_id\":");
+      
+      if (hexIndex != -1 && bitsIndex != -1 && protoIdIndex != -1) {
+        int hexEnd = body.indexOf("\"", hexIndex + 7);
+        String hexStr = body.substring(hexIndex + 7, hexEnd);
+        
+        int bitsEnd = body.indexOf(",", bitsIndex);
+        if (bitsEnd == -1) bitsEnd = body.indexOf("}", bitsIndex);
+        String bitsStr = body.substring(bitsIndex + 7, bitsEnd);
+        
+        int protoEnd = body.indexOf(",", protoIdIndex);
+        if (protoEnd == -1) protoEnd = body.indexOf("}", protoIdIndex);
+        String protoStr = body.substring(protoIdIndex + 11, protoEnd);
+        
+        codigoSalvoIR = strtoull(hexStr.c_str(), NULL, 16);
+        tamanhoBitsSalvoIR = bitsStr.toInt();
+        protocoloSalvoIR = (decode_type_t)protoStr.toInt();
+        temSinalIRClonado = true;
+      }
+      
+      if (temSinalIRClonado) {
+        Serial.println(">>> 🚀 DISPARANDO SINAL INFRAVERMELHO (WEB) <<<");
+        transmitirIR();
+        server.send(200, "application/json", "{\"status\":\"ok\"}");
+      } 
+      else {
+        server.send(400, "application/json", "{\"status\":\"error\", \"message\":\"Nenhum IR válido recebido.\"}");
+      }
+    }
+  });
+
+  server.begin();
+  Serial.println("🌐 Servidor HTTP iniciado.");
 
   // 1. INICIALIZAÇÃO DO RÁDIO CC1101
-  Serial.print("[CC1101] Inicializando SPI RF... ");
+  Serial.println("[CC1101] Inicializando SPI RF... ");
+  
+  // INICIA O BARRAMENTO ANTES DA BIBLIOTECA
   ELECHOUSE_cc1101.setSpiPin(18, 19, 23, PINO_RF_CS);
+
   if (ELECHOUSE_cc1101.getCC1101()) {
     ELECHOUSE_cc1101.Init();
-    ELECHOUSE_cc1101.setModulation(2); // ASK/OOK
+    ELECHOUSE_cc1101.setModulation(2); // OOK
     ELECHOUSE_cc1101.setMHZ(433.92);   
     ELECHOUSE_cc1101.SetRx();          
     
@@ -56,33 +202,25 @@ void setup() {
     pinMode(PINO_RF_GDO0, INPUT); 
     
     Serial.println("✅ SINAL VERDE (Modo Leitura RAW Ativado)");
-  } else {
+  } 
+  else {
     Serial.println("❌ FALHA DE HARDWARE (CC1101 Nao Encontrado)");
   }
   
   // 2. INICIALIZAÇÃO DO INFRAVERMELHO
-  Serial.print("[IR RECV] Ativando sensor no pino 27... ");
+  Serial.println("[IR RECV] Ativando sensor no pino 27...");
   irrecv.enableIRIn(); 
   Serial.println("✅ SINAL VERDE (Escutando sinais IR)");
 
-  Serial.print("[IR SEND] Ativando emissor no pino 26... ");
+  Serial.println("[IR SEND] Ativando emissor no pino 26... ");
   irsend.begin(); 
   Serial.println("✅ SINAL VERDE (Pronto para emitir IR)");
-
-  Serial.println("==================================================");
-  Serial.println("🛠️ STATUS: Aguardando comandos...");
-  Serial.println("-> Aponte o controle da TV (IR clona automaticamente)");
-  Serial.println("-> Digite 'C' para CLONAR campainha (Aproxime bem!)");
-  Serial.println("-> Digite 'T' para disparar INFRAVERMELHO (TV/Ar)");
-  Serial.println("-> Digite 'R' para disparar RADIOFREQUENCIA (Portoes)");
-  Serial.println("-> Digite 'M' para abrir o MONITOR DE SINAL (Teste RF)");
-  Serial.println("==================================================");
 }
 
 // ==================================================
 // --- ROTINAS DE CAPTURA
 // ==================================================
-void infravermelho() {
+void capturaIR() {
   if (resultadosIR.bits < 4 || resultadosIR.decode_type == UNKNOWN) {
     irrecv.resume();
     return; 
@@ -94,29 +232,14 @@ void infravermelho() {
   tamanhoBitsSalvoIR = resultadosIR.bits;
   
   Serial.print("Protocolo: "); Serial.println(typeToString(protocoloSalvoIR));
-  Serial.print("Código: 0x"); Serial.println(codigoSalvoIR, HEX);
+  Serial.print("Código: "); Serial.println(codigoSalvoIR, HEX);
   Serial.print("Tamanho: "); Serial.print(tamanhoBitsSalvoIR); Serial.println(" bits");
   
   temSinalIRClonado = true;
-  Serial.println("💾 Sinal IR gravado! Aperte 'T' no terminal para retransmitir.");
   irrecv.resume();
 }
 
-void clonarRawRF() {
-  Serial.println("\n--- 📡 MODO DE CAPTURA RF (RAW SQUELCH) ---");
-  Serial.println("Aperte e SEGURE o botao da campainha BEM PERTO da antena...");
-
-  unsigned long inicioEspera = millis();
-  // SQUELCH: Fica travado esperando o sinal romper o ruido de -60dBm
-  while (ELECHOUSE_cc1101.getRssi() < -60) {
-    if (millis() - inicioEspera > 8000) {
-      Serial.println("⏳ Tempo esgotado (8s). Nenhum sinal forte recebido.");
-      return;
-    }
-  }
-
-  Serial.println("💥 EXPLOSAO DE ENERGIA DETECTADA! Gravando onda...");
-
+void capturaRF() {
   // Sincroniza o início da gravação com a próxima borda de subida (HIGH)
   while(digitalRead(PINO_RF_GDO0) == HIGH);
   while(digitalRead(PINO_RF_GDO0) == LOW);
@@ -129,6 +252,7 @@ void clonarRawRF() {
   // Grava as transições elétricas do ar por 60 milissegundos
   while(micros() - inicioGravacao < 60000 && tamanhoSinalRFClonado < MAX_RAW_PULSOS) {
     int leitura = digitalRead(PINO_RF_GDO0);
+
     if (leitura != estadoAtual) {
       unsigned long agora = micros();
       bufferRawRF[tamanhoSinalRFClonado] = agora - ultimoTempo;
@@ -142,10 +266,37 @@ void clonarRawRF() {
     temSinalRFClonado = true;
     Serial.print("✅ Onda gravada com sucesso! Transicoes: ");
     Serial.println(tamanhoSinalRFClonado);
-    Serial.println("💾 Aperte 'R' no terminal para retransmitir a onda.");
-  } else {
-    Serial.println("⚠️ Falha na captura. Sinal muito curto ou ruido.");
+  } 
+  else {
+    Serial.println("❌ Falha na captura. Sinal muito curto ou ruido.");
   }
+}
+
+void clonarSinal() {
+  Serial.println("\n---  MODO DE CAPTURA DE SINAL ATIVO COM FILTRO PARA RF (RAW SQUELCH) ---");
+  unsigned long inicioEspera = millis();
+
+  // SQUELCH: Fica travado esperando o sinal romper o ruido de -60dBm ou receber um IR
+  while (ELECHOUSE_cc1101.getRssi() < -60) {
+
+    if (millis() - inicioEspera > 8000) {
+      Serial.println("⏳ Tempo esgotado (8s). Nenhum sinal forte recebido.");
+      return;
+    }
+
+    // Permite que o IR interrompa a escuta do RF instantaneamente
+    if (irrecv.decode(&resultadosIR)) {
+      capturaIR();
+
+      if (temSinalIRClonado) {
+        Serial.println("📺 Sinal IR detectado!");
+        return;
+      }
+    }
+  }
+
+  Serial.println("💥 EXPLOSAO DE ENERGIA DETECTADA! Gravando onda...");
+  capturaRF();
 }
 
 // ==================================================
@@ -185,63 +336,19 @@ void transmitirRF() {
   Serial.println("==================================================");
 }
 
+void transmitirIR() {
+  irrecv.disableIRIn();
+  delay(50);
+  irsend.send(protocoloSalvoIR, codigoSalvoIR, tamanhoBitsSalvoIR);
+  delay(50);
+  irrecv.enableIRIn();
+  Serial.println("✅ Transmissao IR (Web) concluida!");
+}
+
 // ==================================================
 // --- LOOP PRINCIPAL
 // ==================================================
 void loop() {
-  // Escuta ativa de luz (IR)
-  if (irrecv.decode(&resultadosIR)) {
-    infravermelho();
-  }
-
-  // Tratamento de comandos do Teclado
-  if (Serial.available() > 0) {
-    char comando = Serial.read();
-
-    if (comando == '\n' || comando == '\r') return;
-
-    // --- COMANDO: CLONAR RF (C) ---
-    if (comando == 'C' || comando == 'c') {
-      clonarRawRF();
-    }
-    // --- COMANDO: TRANSMITIR IR (T) ---
-    else if (comando == 'T' || comando == 't') {
-      if (temSinalIRClonado) {
-        Serial.println("\n>>> 🚀 DISPARANDO SINAL INFRAVERMELHO GRAVADO <<<");
-        irrecv.disableIRIn();
-        delay(50);
-        irsend.send(protocoloSalvoIR, codigoSalvoIR, tamanhoBitsSalvoIR);
-        delay(50);
-        irrecv.enableIRIn();
-        Serial.println("✅ Transmissao IR concluida!");
-      } else {
-        Serial.println("\n❌ ERRO: Nenhum sinal IR clonado ainda.");
-      }
-    } 
-    // --- COMANDO: TRANSMITIR RF (R) ---
-    else if (comando == 'R' || comando == 'r') {
-      transmitirRF();
-    } 
-    // --- COMANDO: MONITOR DE SINAL BRUTO (M) ---
-    else if (comando == 'M' || comando == 'm') {
-      Serial.println("\n--- 📡 MEDIDOR DE ENERGIA RF (ATIVO POR 5 SEGUNDOS) ---");
-      Serial.println("Aperte o botao da campainha e segure perto da antena AGORA!");
-      
-      unsigned long inicio = millis();
-      while (millis() - inicio < 5000) {
-        int forcaSinal = ELECHOUSE_cc1101.getRssi();
-        Serial.print("Potencia da Onda (RSSI): ");
-        Serial.print(forcaSinal);
-        Serial.println(" dBm");
-        delay(250);
-      }
-      Serial.println("--- FIM DO TESTE DE HARDWARE ---");
-    }
-    // --- COMANDO INVALIDO ---
-    else {
-      Serial.print("\n⚠️ Comando ignorado (");
-      Serial.print(comando);
-      Serial.println("). Comandos validos: C, T, R, M.");
-    }
-  }
+  // Trata requisições HTTP recebidas do navegador
+  server.handleClient();
 }
