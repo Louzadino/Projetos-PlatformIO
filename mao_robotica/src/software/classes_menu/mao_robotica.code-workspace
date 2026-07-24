@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../../../../../../mao_robotica"
+		},
+		{
+			"name": "mao_robotica",
+			"path": "../../.."
+		}
+	],
+	"settings": {}
+}
